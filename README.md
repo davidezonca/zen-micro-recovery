@@ -121,16 +121,19 @@ SUBSYSTEM=="usb", ATTR{idVendor}=="041e", ATTR{idProduct}=="411e", TAG+="uaccess
 
    Songs are saved as `<Artist>/<Album>/<Title>.<ext>`.
 5. If the player freezes, restart it (see below) and run the same command
-   again. Songs already copied are skipped. To have the copy restart by
-   itself after each restart:
+   again. Songs already copied are skipped. Or let the copy carry on by
+   itself after every restart:
 
    ```sh
-   scripts/resume_on_replug.sh "$PWD" "$DEST"       # waits for you to unplug, restart and replug
-   scripts/resume_on_replug.sh "$PWD" "$DEST" now   # the player is already plugged in and ready
+   scripts/resume_on_replug.sh "$PWD" "$DEST"        # start now, resume after each restart
+   scripts/resume_on_replug.sh "$PWD" "$DEST" wait   # the player plugged in now is frozen
    ```
 
-   It reads `tracks.txt` from this directory, appends to
-   `copy-progress.log` and runs one copy each time you start it.
+   It reads `tracks.txt` from this directory and appends to
+   `copy-progress.log`. When the player freezes, it logs that and waits for
+   the player to come back on USB with a new device number, which happens
+   when you restart it and plug it in again. It stops when the copy is
+   finished.
 6. When everything else is copied, retry the songs that failed, one at a
    time if you like:
 
