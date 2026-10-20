@@ -22,5 +22,5 @@ SOFTWARE.
 
 This licence covers the files written for this repository. The bundled
 libnjb release (src/libnjb-2.2.7.tar.gz) keeps its own BSD licence, found in
-the LICENSE file inside the tarball; the patch in src/ is offered under the
+the LICENSE file inside the tarball; the patches in src/ are offered under the
 same BSD licence as libnjb.

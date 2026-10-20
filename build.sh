@@ -32,7 +32,9 @@ if [ ! -f /usr/include/usb.h ]; then
 fi
 
 tar xzf "$P/src/libnjb-2.2.7.tar.gz" -C "$B"
-patch -d "$B/libnjb-2.2.7" -p1 < "$P/src/libnjb-skip-set-configuration.patch"
+for p in "$P"/src/*.patch; do
+  patch -s -d "$B/libnjb-2.2.7" -p1 < "$p"
+done
 
 mkdir -p "$B/obj" && cd "$B/obj"
 "$B/libnjb-2.2.7/configure" --prefix="$P/njb" --build="$(uname -m)-pc-linux-gnu" \

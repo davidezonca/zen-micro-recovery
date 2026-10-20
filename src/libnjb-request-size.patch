@@ -1,0 +1,26 @@
+--- a/src/protocol3.c
++++ b/src/protocol3.c
+@@ -3229,6 +3229,14 @@
+ }
+ 
+ 
++/*
++ * The chunk size asked for by njb3_request_file_chunk(). Callers may lower
++ * it: on a Zen Micro with a failing drive, a bad spot stalled the transfer
++ * of the whole 1 MiB chunk it was in, often well before the bad spot, so
++ * smaller chunks narrow down where it is.
++ */
++u_int32_t njb3_request_size = NJB3_CHUNK_SIZE;
++
+ /**
+  * This function requests a chunk from a certain file. The offset may
+  * index into the file. The chunk transfer size is 1MB by default (as
+@@ -3263,7 +3271,7 @@
+   /* Offset into file */
+   from_32bit_to_njb3_bytes(offset, &njb3_request_file[8]);
+   /* Chunk length */
+-  from_32bit_to_njb3_bytes(NJB3_CHUNK_SIZE, &njb3_request_file[12]);
++  from_32bit_to_njb3_bytes(njb3_request_size, &njb3_request_file[12]);
+ 
+   if (send_njb3_command(njb, njb3_request_file, 0x10) == -1){
+     __leave;

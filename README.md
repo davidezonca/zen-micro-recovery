@@ -88,7 +88,7 @@ cd zen-micro-recovery
 ./build.sh
 ```
 
-This builds libnjb 2.2.7 with [one patch](#how-it-works-and-what-we-learned)
+This builds libnjb 2.2.7 with [two small patches](#how-it-works-and-what-we-learned)
 into `njb/`, and the copier into `bin/njb_bulkget`. Nothing is installed
 system-wide.
 
@@ -134,16 +134,40 @@ SUBSYSTEM=="usb", ATTR{idVendor}=="041e", ATTR{idProduct}=="411e", TAG+="uaccess
    the player to come back on USB with a new device number, which happens
    when you restart it and plug it in again. It stops when the copy is
    finished.
-6. When everything else is copied, retry the songs that failed, one at a
-   time if you like:
+6. When everything else is copied, retry the songs that failed (their IDs
+   are in `hung-tracks.txt`), one at a time, waiting for a restart after each
+   freeze:
 
    ```sh
-   scripts/zen_extract.py tracks.txt bin/njb_bulkget "$DEST" only=65540,66108
+   scripts/resume_on_replug.sh "$PWD" "$DEST" now only=65540,66108
    ```
 
    A song that copies is taken off the problem list and its partial file is
    deleted. If it fails again, the longer of the partial copies is kept.
-7. Check the WMA files for DRM: `scripts/wma_drm_check.py "$DEST"`
+   `zen_extract.py ... only=65540,66108` does the same in a single session,
+   stopping at the first freeze.
+7. For songs that still freeze, recover the rest of the song past the bad
+   spot:
+
+   ```sh
+   scripts/resume_on_replug.sh "$PWD" "$DEST" now salvage=65540,66108
+   ```
+
+   `zen_salvage.py` reads each song from the first byte still missing, in
+   8 KiB requests instead of libnjb's 1 MiB ones (see
+   [below](#how-it-works-and-what-we-learned)). When the player freezes,
+   the 8 KiB block it froze on is marked bad, and after the restart the next
+   run carries on after it. If a bad block comes right after another one, 4
+   times as much is marked bad, so a large damaged area costs only a few
+   restarts. What arrives is written into the partial file at its own
+   position, so bad blocks are left as zeros: MP3 players skip over them, and
+   in a WAV they are silence. When every byte has been read or marked bad,
+   the song is renamed `<Title> (gaps).<ext>`, or gets its normal name if
+   nothing was bad after all, and the log lists the gaps with their
+   approximate play position. Progress is kept in `salvage.json`, so the
+   watcher can run it again after every restart until all listed songs are
+   done.
+8. Check the WMA files for DRM: `scripts/wma_drm_check.py "$DEST"`
 
 `zen_extract.py` exits with 0 if every song was copied, 1 if some failed and
 2 if the player stopped responding.
@@ -160,6 +184,8 @@ in again.
 | `manifest.csv` | Every track handled by the last run, with its status and path (`manifest-retry.csv` for `only=` runs). |
 | `hung-tracks.txt` | IDs of songs that froze the player or failed. Later runs skip them until you retry them with `only=`. |
 | `<Title> (partial).<ext>` | The part of a failed song that arrived before the freeze. A cut-off MP3 still plays up to the cut. |
+| `<Title> (gaps).<ext>` | A salvaged song: full length, with zeros where the player could not read. |
+| `salvage.json` | For each salvaged song, the byte ranges recovered and the ranges marked bad. |
 | `copy-progress.log` | Progress, errors and battery level, if you redirect output there as above. |
 
 ## What's in this repository
@@ -168,10 +194,12 @@ in again.
 |---|---|
 | `src/libnjb-2.2.7.tar.gz` | The unmodified libnjb 2.2.7 release, from [SourceForge](https://downloads.sourceforge.net/project/libnjb/libnjb/2.2.7/libnjb-2.2.7.tar.gz) (sha256 `ccbcfc870bdc10ad7a144f81a340b61bad74a6f00f77cf08db5866332668d2b6`). It's kept here because the project is no longer maintained. |
 | `src/libnjb-skip-set-configuration.patch` | Removes libnjb's `usb_set_configuration()` call, which breaks the connection on xHCI controllers. |
+| `src/libnjb-request-size.patch` | Lets a program choose how much of a file libnjb asks the player for per request (1 MiB by default). |
 | `build.sh` | Builds the patched libnjb and the copier into `njb/` and `bin/`, without root. |
-| `scripts/njb_bulkget.c` | A small C helper that opens the player once and downloads many tracks in that one session. |
+| `scripts/njb_bulkget.c` | A small C helper that opens the player once and downloads many tracks in that one session, from the start of each track or from a given offset. |
 | `scripts/zen_extract.py` | Runs the copy: names the files, resumes, notices freezes, keeps partial files and records problem songs. |
-| `scripts/resume_on_replug.sh` | Waits for the player to be restarted and plugged back in, then resumes the copy. |
+| `scripts/zen_salvage.py` | Recovers the rest of a damaged song past the spots where the player freezes. |
+| `scripts/resume_on_replug.sh` | Waits for the player to be restarted and plugged back in, then resumes the copy, the retries or the salvage. |
 | `scripts/wma_drm_check.py` | Reports whether WMA files carry Windows Media DRM. |
 
 Everything here only reads from the player. `build.sh` deletes the libnjb
@@ -213,6 +241,10 @@ here can change what's on it.
      adjacent track IDs, probably files stored next to each other.
    - stops after a read error, because the player always hung on the next
      request anyway, and the next song shouldn't take the blame.
+   - can read the rest of the song past the bad spot (`zen_salvage.py`).
+     libnjb always reads a track from byte 0, asking the player for 1 MiB at
+     a time by file offset. `njb_bulkget` uses the same two libnjb protocol
+     functions to start at any offset instead.
 6. **libnjb prints to stdout.** Some libnjb errors are printed to stdout,
    where they mixed with `njb_bulkget`'s replies and got the wrong songs
    blamed. `njb_bulkget` keeps its replies on a private copy of stdout, sends
@@ -237,8 +269,9 @@ file really plays, decode it all the way through with
 
 - Tested on one Zen Micro (firmware 1.11.1, 1,048 tracks, 5.7 GB) and one
   laptop.
-- A song stored on a damaged part of the drive can only be copied up to the
-  bad spot.
+- A song stored on a damaged part of the drive is recovered with gaps where
+  the player can't read it. A WAV whose first block is missing has lost its
+  header and won't play until a header is added back.
 - Reading only. Nothing here sends music or firmware to the player.
 - The scripts look for the Zen Micro's USB ID `041e:411e` (`lsusb -d` in
   `zen_extract.py` and `resume_on_replug.sh`). For another model, change it
@@ -248,6 +281,6 @@ file really plays, decode it all the way through with
 
 The files written for this repository are under the MIT licence (see
 `LICENSE`). libnjb, bundled in `src/`, keeps its own BSD licence (see
-`LICENSE` and `AUTHORS` inside the tarball), and the patch is offered under
+`LICENSE` and `AUTHORS` inside the tarball), and the patches are offered under
 the same BSD licence. The Rescue Mode steps above are quoted from the cited
 forum post, which relays Creative's support article.

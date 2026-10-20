@@ -65,6 +65,30 @@ def read_reply(proc, timeout, expected):
     return None
 
 
+def plan_paths(tracks, dest):
+    """[(track, <dest>/<Artist>/<Album>/<Title>.<ext>)] for all tracks."""
+    used, plan = set(), []
+    for t in tracks:
+        ext = EXT.get(t.get("CODEC", ""), t.get("CODEC", "bin").lower())
+        d = os.path.join(dest, clean(t.get("ARTIST"), "Unknown Artist"),
+                         clean(t.get("ALBUM"), "Unknown Album"))
+        stem = clean(t.get("TITLE"), f"Track {t['ID']}")
+        path = os.path.join(d, f"{stem}.{ext}")
+        if path in used:
+            path = os.path.join(d, f"{stem} [{t['ID']}].{ext}")
+        used.add(path)
+        plan.append((t, path))
+    return plan
+
+
+def unlist(hung_file, tid):
+    """Take a track that has now been copied off the problem list."""
+    with open(hung_file) as f:
+        keep = [i for i in f.read().split() if i != tid]
+    with open(hung_file, "w") as f:
+        f.write("".join(i + "\n" for i in keep))
+
+
 def player_present():
     return subprocess.run(["lsusb", "-d", "041e:411e"],
                           capture_output=True).returncode == 0
@@ -78,17 +102,7 @@ def main():
     tracks = parse_tracks(tracks_txt)[:limit]
     os.makedirs(dest, exist_ok=True)
 
-    used, plan = set(), []
-    for t in tracks:
-        ext = EXT.get(t.get("CODEC", ""), t.get("CODEC", "bin").lower())
-        d = os.path.join(dest, clean(t.get("ARTIST"), "Unknown Artist"),
-                         clean(t.get("ALBUM"), "Unknown Album"))
-        stem = clean(t.get("TITLE"), f"Track {t['ID']}")
-        path = os.path.join(d, f"{stem}.{ext}")
-        if path in used:
-            path = os.path.join(d, f"{stem} [{t['ID']}].{ext}")
-        used.add(path)
-        plan.append((t, path))
+    plan = plan_paths(tracks, dest)
     if only:  # filtered after naming so collision suffixes stay the same
         plan = [tp for tp in plan if tp[0]["ID"] in only]
 
@@ -160,14 +174,12 @@ def main():
                 os.replace(part, path)
                 status = "ok"
                 copied_bytes += size
-                if os.path.exists(partial):
-                    os.remove(partial)
+                for piece in (partial, f"{root} (gaps){ext}"):
+                    if os.path.exists(piece):
+                        os.remove(piece)
                 if t["ID"] in listed:
                     listed.discard(t["ID"])
-                    with open(hung_file) as f:
-                        keep = [i for i in f.read().split() if i != t["ID"]]
-                    with open(hung_file, "w") as f:
-                        f.write("".join(i + "\n" for i in keep))
+                    unlist(hung_file, t["ID"])
             else:
                 # After a read error the player has always hung on the next
                 # request, and once it drops off USB every request fails at
