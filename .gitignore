@@ -1,0 +1,11 @@
+# build output (./build.sh)
+/build/
+/njb/
+/bin/
+__pycache__/
+
+# the player's track list: personal data, created with njb/bin/njb-tracks
+/tracks.txt
+
+# distribution package downloaded by build.sh when usb.h is missing
+/src/*.rpm

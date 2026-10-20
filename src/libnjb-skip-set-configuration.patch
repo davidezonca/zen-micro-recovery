@@ -1,0 +1,16 @@
+--- a/src/base.c	2007-11-11 01:06:29.000000000 +0100
++++ b/src/base.c	2026-10-19 19:07:45.608149724 +0200
+@@ -310,11 +310,8 @@
+    * the second one may be for operating the device under "full speed"
+    * instead, so that it becomes slower.
+    */
+-  if ( usb_set_configuration(njb->dev, njb->usb_config) ) {
+-    njb_error_add(njb, "usb_set_configuration", -1);
+-    __leave;
+-    return -1;
+-  }
++  /* The kernel has already selected the device's only configuration;
++   * re-selecting it on xHCI leaves the bulk endpoints in a bad state. */
+   
+   /* With several jukeboxes connected, a call will often fail
+    * here when you try to connect to the second jukebox after
