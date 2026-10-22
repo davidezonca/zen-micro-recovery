@@ -9,7 +9,8 @@ Files are written as <dest>/<Artist>/<Album>/<Title>.<ext>. Re-running skips
 tracks that already exist with the expected size, so an interrupted copy can
 simply be resumed.
 only=... retries just those tracks, including ones listed in hung-tracks.txt.
-Exit codes: 0 all copied, 1 some tracks failed, 2 player stopped responding.
+Exit codes: 0 all copied, 1 some tracks failed, 2 player stopped responding,
+3 could not open the player.
 """
 import csv
 import os
@@ -24,6 +25,10 @@ EXT = {"MP3": "mp3", "WMA": "wma", "WAV": "wav"}
 # chunks the player reads from its drive.
 SONG_PAUSE_S = 3
 CHUNK_PAUSE_MS = 300
+# A frozen player sends nothing more, but libnjb only gives up on a block
+# after about 80 s, so watch the file instead: no new bytes for this long
+# means the player has frozen. Blocks normally arrive many times a second.
+STALL_S = 20
 
 
 def parse_tracks(path):
@@ -48,15 +53,24 @@ def clean(name, fallback):
     return (name or fallback)[:150]
 
 
-def read_reply(proc, timeout, expected):
+def read_reply(proc, timeout, expected, part=None):
     """Return the first copier line found in `expected`, "" if the copier
-    exited, or None if no expected line arrives within `timeout` seconds.
-    Unexpected lines are skipped so stray output cannot desync replies."""
+    exited, or None if no expected line arrives within `timeout` seconds or,
+    while the copier writes to the file `part`, it stops growing for STALL_S
+    seconds. Unexpected lines are skipped so stray output cannot desync
+    replies."""
     deadline = time.time() + timeout
+    size, since = -1, time.time()
     while (left := deadline - time.time()) > 0:
-        ready, _, _ = select.select([proc.stdout], [], [], left)
+        ready, _, _ = select.select([proc.stdout], [], [], min(left, 1))
         if not ready:
-            return None
+            if part is not None:
+                now = os.path.getsize(part) if os.path.exists(part) else 0
+                if now != size:
+                    size, since = now, time.time()
+                elif time.time() - since > STALL_S:
+                    return None
+            continue
         line = proc.stdout.readline()
         if not line:
             return ""
@@ -128,7 +142,7 @@ def main():
     if read_reply(proc, 60, ("READY",)) != "READY":
         proc.kill()
         print("PLAYER NOT RESPONDING: could not open it, reconnect and re-run")
-        sys.exit(2)
+        sys.exit(3)
 
     total_bytes = sum(int(t["FILE SIZE"]) for t, _ in plan)
     done_bytes, copied_bytes, failed = 0, 0, []
@@ -162,7 +176,7 @@ def main():
                 proc.stdin.flush()
                 pauses = size / 2**20 * CHUNK_PAUSE_MS / 1000
                 reply = read_reply(proc, 60 + size / 250_000 + pauses,
-                                   (f"OK {t['ID']}", f"ERR {t['ID']}"))
+                                   (f"OK {t['ID']}", f"ERR {t['ID']}"), part)
             except BrokenPipeError:
                 reply = ""
             if reply is None:

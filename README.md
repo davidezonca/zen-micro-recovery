@@ -2,15 +2,16 @@
 
 Tools and notes for copying the music off an old **Creative Zen Micro** MP3
 player on a current Linux system. They keep working even when the player's
-hard drive is failing and the player keeps freezing partway through.
+hard drive is failing and the player keeps freezing partway through, and
+they can recover most of a file that sits on damaged parts of the drive.
 
-> **This repository is entirely AI-generated.** The code, the libnjb patch,
+> **This repository is entirely AI-generated.** The code, the libnjb patches,
 > the scripts and this README were written by an AI coding assistant (Claude,
-> made by Anthropic, running in Claude Code) during one interactive recovery
-> session in October 2026. A person handled the player (battery pulls, menus,
-> cables), reported what its screen showed and decided what to try. Everything
-> was tested on a single Zen Micro and a single laptop, so read the code before
-> you run it.
+> made by Anthropic, running in Claude Code) during an interactive recovery
+> over three days in October 2026. A person handled the player (about a
+> hundred unplugs and battery pulls, menus, cables), reported what its screen
+> showed and decided what to try. Everything was tested on a single Zen Micro
+> and a single laptop, so read the code before you run it.
 
 ## Is this for you?
 
@@ -23,8 +24,8 @@ hard drive is failing and the player keeps freezing partway through.
 - Your distribution no longer ships libnjb (Fedora 44 doesn't).
 - libnjb fails or times out on a USB 3 (xHCI) port, and the kernel logs
   `xhci_hcd: Trying to add endpoint 0x2 without dropping it`.
-- The player freezes partway through a long copy and ignores the computer
-  until you take the battery out.
+- The player freezes partway through a copy and ignores the computer until
+  you unplug it or take the battery out.
 - The player is stuck on the Creative logo. Start with
   [Step 1](#step-1-get-the-player-to-boot-rescue-mode).
 
@@ -81,6 +82,7 @@ Requirements:
   it locally (this needs `rpm2cpio` and `cpio`), so you don't need root. On
   other distributions, install the libusb 0.1 development package (for
   example `libusb-dev`; untested).
+- Optional: `numpy` for `fill_wav_gaps.py`, `ffmpeg` to check files.
 
 ```sh
 git clone https://github.com/davidezonca/zen-micro-recovery
@@ -88,16 +90,15 @@ cd zen-micro-recovery
 ./build.sh
 ```
 
-This builds libnjb 2.2.7 with [two small patches](#how-it-works-and-what-we-learned)
+This builds libnjb 2.2.7 with [two small patches](#whats-in-this-repository)
 into `njb/`, and the copier into `bin/njb_bulkget`. Nothing is installed
 system-wide.
 
 **USB permissions.** On Fedora a desktop user can use the player without
 root: the udev hardware database marks its USB ID as a media player
 (`ID_MEDIA_PLAYER=1`), and `70-uaccess.rules` gives the logged-in user
-access to media players. If the tools
-report no device or a permission error on your system, add this udev rule and
-plug the player in again:
+access to media players. If the tools report no device or a permission error
+on your system, add this udev rule and plug the player in again:
 
 ```
 # /etc/udev/rules.d/60-creative-zen-micro.rules
@@ -110,33 +111,24 @@ SUBSYSTEM=="usb", ATTR{idVendor}=="041e", ATTR{idProduct}=="411e", TAG+="uaccess
    shows "Docked" while a program is talking to it.
 2. Check that it answers: `njb/bin/njb-handshake`
 3. Save its track list: `njb/bin/njb-tracks > tracks.txt`
-4. Start the copy and follow it in a second terminal:
+4. Start the copy, and follow it in a second terminal. The watcher carries on
+   by itself after every freeze, once you have unplugged the player and
+   plugged it in again:
 
    ```sh
    DEST=~/Music/"Zen Micro"
    mkdir -p "$DEST"
-   scripts/zen_extract.py tracks.txt bin/njb_bulkget "$DEST" >> "$DEST/copy-progress.log" 2>&1
+   scripts/resume_on_replug.sh "$PWD" "$DEST"        # start now, resume after each freeze
    tail -f "$DEST/copy-progress.log"
    ```
 
-   Songs are saved as `<Artist>/<Album>/<Title>.<ext>`.
-5. If the player freezes, restart it (see below) and run the same command
-   again. Songs already copied are skipped. Or let the copy carry on by
-   itself after every restart:
-
-   ```sh
-   scripts/resume_on_replug.sh "$PWD" "$DEST"        # start now, resume after each restart
-   scripts/resume_on_replug.sh "$PWD" "$DEST" wait   # the player plugged in now is frozen
-   ```
-
-   It reads `tracks.txt` from this directory and appends to
-   `copy-progress.log`. When the player freezes, it logs that and waits for
-   the player to come back on USB with a new device number, which happens
-   when you restart it and plug it in again. It stops when the copy is
-   finished.
-6. When everything else is copied, retry the songs that failed (their IDs
-   are in `hung-tracks.txt`), one at a time, waiting for a restart after each
-   freeze:
+   Songs are saved as `<Artist>/<Album>/<Title>.<ext>`. Use `wait` as the
+   third argument if the player plugged in now is already frozen. To copy
+   without the watcher, run
+   `scripts/zen_extract.py tracks.txt bin/njb_bulkget "$DEST"` and run it
+   again after each freeze; songs already copied are skipped.
+5. When everything else is copied, retry the songs that failed (their IDs
+   are in `hung-tracks.txt`), one at a time:
 
    ```sh
    scripts/resume_on_replug.sh "$PWD" "$DEST" now only=65540,66108
@@ -144,49 +136,66 @@ SUBSYSTEM=="usb", ATTR{idVendor}=="041e", ATTR{idProduct}=="411e", TAG+="uaccess
 
    A song that copies is taken off the problem list and its partial file is
    deleted. If it fails again, the longer of the partial copies is kept.
-   `zen_extract.py ... only=65540,66108` does the same in a single session,
-   stopping at the first freeze.
-7. For songs that still freeze, recover the rest of the song past the bad
-   spot:
+6. Check the WMA files for DRM: `scripts/wma_drm_check.py "$DEST"`
+
+**When the player freezes.** The log says so about 20 s after the last data
+arrived. Unplug the cable and plug it in again: the "Docked" screen goes away
+and the next run starts 5 s after the player is back. If it still doesn't
+answer (the log says "could not open it" three times), unplug it, take the
+battery out for a few seconds, turn the player on, wait for the main menu and
+plug it in again.
+
+## Step 4: recover the songs that still freeze the player
+
+These steps need one unplug per bad block found, so start with the songs
+you care about most. Each runs through the watcher, which continues after
+every replug until it's done:
+
+```sh
+scripts/resume_on_replug.sh "$PWD" "$DEST" now salvage=ID,ID   # 1. read around the bad spots
+scripts/resume_on_replug.sh "$PWD" "$DEST" now fill=ID,ID      # 2. go back for what was skipped
+scripts/resume_on_replug.sh "$PWD" "$DEST" now probe=ID,ID     # 3. try the blocks predicted bad
+```
+
+1. **salvage** reads each song in 8 KiB requests from the first byte still
+   missing. When the player freezes, that 8 KiB block is marked bad, and the
+   next run continues after it. Where bad blocks come with less than 1 MiB of
+   good data between them, it jumps ahead instead, further each time (from
+   1/256 to 1/16 of the song), so even a song that is damaged all the way
+   through takes about 20 replugs. The song ends up as
+   `<Title> (gaps).<ext>`: full length, with zeros where nothing could be
+   read.
+2. **fill** reads everything that was skipped, without jumping, and stops
+   short of known bad blocks and of blocks predicted to be bad (see
+   [below](#5-bad-blocks-follow-the-drives-tracks)).
+3. **probe** reads the predicted blocks one by one. Readable ones are
+   recovered; each really bad one costs a replug, and for us about half were.
+4. For WAV files, `fill_wav_gaps.py` makes a copy in which each gap is
+   filled from the audio around it, so short dropouts are no longer heard:
 
    ```sh
-   scripts/resume_on_replug.sh "$PWD" "$DEST" now salvage=65540,66108
+   scripts/fill_wav_gaps.py "$DEST/salvage.json" ID "song (gaps).wav" "song (gaps filled).wav"
    ```
 
-   `zen_salvage.py` reads each song from the first byte still missing, in
-   8 KiB requests instead of libnjb's 1 MiB ones (see
-   [below](#how-it-works-and-what-we-learned)). When the player freezes,
-   the 8 KiB block it froze on is marked bad, and after the restart the next
-   run carries on after it. If a bad block comes right after another one, 4
-   times as much is marked bad, so a large damaged area costs only a few
-   restarts. What arrives is written into the partial file at its own
-   position, so bad blocks are left as zeros: MP3 players skip over them, and
-   in a WAV they are silence. When every byte has been read or marked bad,
-   the song is renamed `<Title> (gaps).<ext>`, or gets its normal name if
-   nothing was bad after all, and the log lists the gaps with their
-   approximate play position. Progress is kept in `salvage.json`, so the
-   watcher can run it again after every restart until all listed songs are
-   done.
-8. Check the WMA files for DRM: `scripts/wma_drm_check.py "$DEST"`
+5. A WAV whose first block is bad has lost its header. It can be read as
+   raw PCM: work out the format from its size and length (`FILE SIZE` and
+   `LENGTH` in `tracks.txt`; 192,000 bytes per second is 48 kHz 16-bit
+   stereo, 176,400 is 44.1 kHz), then for example
+   `ffmpeg -f s16le -ar 48000 -ac 2 -i "song (gaps).wav" "song.wav"`.
 
-`zen_extract.py` exits with 0 if every song was copied, 1 if some failed and
-2 if the player stopped responding.
-
-**Restarting a frozen player.** A frozen player ignores everything over USB,
-including a USB port reset. Unplug it, take the battery out for a few
-seconds, put it back, turn the player on, wait for the main menu and plug it
-in again.
+MP3 players skip over the zeroed gaps with a short dropout and need nothing
+more. Files that are salvaged keep their ID in `hung-tracks.txt`.
 
 **Files written to the destination folder:**
 
 | File | What it is |
 |---|---|
-| `manifest.csv` | Every track handled by the last run, with its status and path (`manifest-retry.csv` for `only=` runs). |
-| `hung-tracks.txt` | IDs of songs that froze the player or failed. Later runs skip them until you retry them with `only=`. |
+| `copy-progress.log` | Progress, errors and battery level of every run. |
+| `manifest.csv` | Every track handled by the last copy run, with its status and path (`manifest-retry.csv` for `only=` runs). |
+| `hung-tracks.txt` | IDs of songs that froze the player or failed. The copy skips them until you retry them with `only=`. |
 | `<Title> (partial).<ext>` | The part of a failed song that arrived before the freeze. A cut-off MP3 still plays up to the cut. |
 | `<Title> (gaps).<ext>` | A salvaged song: full length, with zeros where the player could not read. |
-| `salvage.json` | For each salvaged song, the byte ranges recovered and the ranges marked bad. |
-| `copy-progress.log` | Progress, errors and battery level, if you redirect output there as above. |
+| `salvage.json` | For each salvaged song, the byte ranges read, found bad, skipped and predicted bad. |
 
 ## What's in this repository
 
@@ -196,10 +205,11 @@ in again.
 | `src/libnjb-skip-set-configuration.patch` | Removes libnjb's `usb_set_configuration()` call, which breaks the connection on xHCI controllers. |
 | `src/libnjb-request-size.patch` | Lets a program choose how much of a file libnjb asks the player for per request (1 MiB by default). |
 | `build.sh` | Builds the patched libnjb and the copier into `njb/` and `bin/`, without root. |
-| `scripts/njb_bulkget.c` | A small C helper that opens the player once and downloads many tracks in that one session, from the start of each track or from a given offset. |
+| `scripts/njb_bulkget.c` | A small C helper that opens the player once and downloads many tracks in that one session: whole, or a byte range of them. |
 | `scripts/zen_extract.py` | Runs the copy: names the files, resumes, notices freezes, keeps partial files and records problem songs. |
-| `scripts/zen_salvage.py` | Recovers the rest of a damaged song past the spots where the player freezes. |
-| `scripts/resume_on_replug.sh` | Waits for the player to be restarted and plugged back in, then resumes the copy, the retries or the salvage. |
+| `scripts/zen_salvage.py` | Recovers damaged songs around the blocks that freeze the player (salvage, fill and probe). |
+| `scripts/resume_on_replug.sh` | Runs any of the above again after every freeze, once the player has been plugged back in. |
+| `scripts/fill_wav_gaps.py` | Fills the gaps in a salvaged WAV from the audio around them. |
 | `scripts/wma_drm_check.py` | Reports whether WMA files carry Windows Media DRM. |
 
 Everything here only reads from the player. `build.sh` deletes the libnjb
@@ -209,69 +219,154 @@ here can change what's on it.
 
 ## How it works, and what we learned
 
-1. **It isn't MTP.** The Zen Micro's original firmware uses Creative's own
-   protocol, and only libnjb implements it. libmtp lists the USB ID but can't
-   talk to the player. libnjb 2.2.7 (2007) was the last release, and several
-   distributions have dropped it, so `build.sh` builds it from source.
-2. **The xHCI patch.** When libnjb opens the player, it selects USB
-   configuration 1. On this laptop's USB 3 (xHCI) controller that call failed
-   and left the bulk endpoints broken. Every transfer after it timed out, and
-   the kernel logged `Trying to add endpoint 0x2 without dropping it`. The
-   player has only one configuration and the kernel has already selected it,
-   so the patch removes the call.
-3. **One session for all songs.** libnjb's `njb-gettr` sample opens and
-   captures the player separately for every song. Each capture makes the
-   player switch to its "Docked" screen and back, and after a few dozen songs
-   its firmware hung. `njb_bulkget` captures the player once and downloads
-   everything in that session.
-4. **Turbo mode off.** By default libnjb requests 16 KiB blocks ("turbo
-   mode"), and its documentation says "a few (very few) devices will react
-   badly on turbo mode". With 8 KiB blocks and a 1 s pause between songs, the
-   first run copied about 500 songs before the player froze. Earlier runs with
-   the defaults had frozen much sooner, but at least one of those freezes was
-   on a damaged song, so it's unclear how much turbo mode mattered.
-5. **Damaged songs.** The freezes that remain are tied to particular songs: a
-   retry froze at exactly the same byte. They are probably bad spots on the
-   player's tiny hard drive. For those songs, the copier:
-   - gives up after 60 s plus 4 s per MB. libnjb's own USB timeout is 10 ms
-     per byte, which is about 80 s for each 8 KiB block.
-   - keeps whatever arrived as a `(partial)` file.
-   - writes the song's ID to `hung-tracks.txt` and skips it on later runs.
-   - copies the neighbours of known-bad songs last. Failures came in pairs of
-     adjacent track IDs, probably files stored next to each other.
-   - stops after a read error, because the player always hung on the next
-     request anyway, and the next song shouldn't take the blame.
-   - can read the rest of the song past the bad spot (`zen_salvage.py`).
-     libnjb always reads a track from byte 0, asking the player for 1 MiB at
-     a time by file offset. `njb_bulkget` uses the same two libnjb protocol
-     functions to start at any offset instead.
-6. **libnjb prints to stdout.** Some libnjb errors are printed to stdout,
-   where they mixed with `njb_bulkget`'s replies and got the wrong songs
-   blamed. `njb_bulkget` keeps its replies on a private copy of stdout, sends
-   everything else to stderr, and every reply carries the track ID.
-7. **Pacing.** By default the copier waits 3 s between songs and 0.3 s between
-   the 1 MiB chunks libnjb requests, for an overall speed of about 0.8 MB/s.
-   It's not proven that this helps beyond turning turbo mode off, because the
-   freezes we saw were tied to particular songs. You can change
-   `SONG_PAUSE_S` and `CHUNK_PAUSE_MS` in `zen_extract.py`.
-8. **Battery.** `njb_bulkget` logs the battery level. A weak battery wasn't
-   the cause of the freezes in our case.
+### 1. Talking to the player
 
-## WMA files and DRM
+- **It isn't MTP.** The Zen Micro's original firmware uses Creative's own
+  protocol, and only libnjb implements it. libmtp lists the USB ID but can't
+  talk to the player. libnjb 2.2.7 (2007) was the last release, and several
+  distributions have dropped it, so `build.sh` builds it from source.
+- **The xHCI patch.** When libnjb opens the player, it selects USB
+  configuration 1. On this laptop's USB 3 (xHCI) controller that call failed
+  and left the bulk endpoints broken: every transfer after it timed out, and
+  the kernel logged `Trying to add endpoint 0x2 without dropping it`. The
+  player has only one configuration and the kernel has already selected it,
+  so the patch removes the call.
+- **libnjb prints to stdout.** Some libnjb errors are printed to stdout,
+  where they mixed with `njb_bulkget`'s replies and got the wrong songs
+  blamed. `njb_bulkget` keeps its replies on a private copy of stdout, sends
+  everything else to stderr, and every reply carries the track ID.
 
-WMA files bought from online music stores in the 2000s may be protected with
-Windows Media DRM, and nothing on Linux can play those. `wma_drm_check.py`
-looks for the encryption objects in each file's ASF header. To confirm that a
-file really plays, decode it all the way through with
-`ffmpeg -v error -i song.wma -f null -`.
+### 2. The bulk copy
+
+- **One session for all songs.** libnjb's `njb-gettr` sample opens and
+  captures the player separately for every song. Each capture makes the
+  player switch to its "Docked" screen and back, and after a few dozen songs
+  its firmware hung. `njb_bulkget` captures the player once and downloads
+  everything in that session.
+- **Turbo mode off.** By default libnjb reads 16 KiB blocks ("turbo mode"),
+  and its documentation says "a few (very few) devices will react badly on
+  turbo mode". With 8 KiB blocks the copy ran for hundreds of songs between
+  freezes, against a few dozen before, but some of the early freezes were on
+  damaged songs, so it's unclear how much turbo mode mattered.
+- **Pacing.** The copier waits 3 s between songs and 0.3 s per MiB, for about
+  0.8 MB/s overall. It's not proven that this helps: the freezes that
+  remained were tied to particular songs.
+- **Stop after a read error.** After a failed request the player always hung
+  on the next one, so the copier stops instead of blaming the next song, and
+  it copies the neighbours of known-bad songs last (failures came in pairs of
+  adjacent track IDs, probably files stored next to each other).
+- **Battery.** `njb_bulkget` logs the battery level. A weak battery wasn't
+  the cause of the freezes.
+
+### 3. Freezes, and getting the player back
+
+- A frozen player stops sending data but doesn't report an error, and
+  libnjb's USB timeout is 10 ms per byte, about 80 s per 8 KiB block. The
+  scripts instead watch the file being written and call the player frozen
+  after **20 s without new data** (blocks normally arrive many times a
+  second).
+- A frozen player doesn't answer a **USB port reset** (`USBDEVFS_RESET`):
+  the kernel reports "device not accepting address". Turning the port off
+  through sysfs (`/sys/bus/usb/devices/.../disable`) didn't help either:
+  on our laptop the port stays powered.
+- **Unplugging the cable** was usually enough: the player drops the "Docked"
+  screen and can be plugged in again straight away. A few times it then
+  showed up on USB but timed out on every command, and needed the battery
+  out.
+- After a replug the watcher waits 5 s, and retries opening the player twice
+  before calling it frozen. Once, the desktop session's access to the newly
+  plugged player wasn't applied (`usb_open: Permission denied`); another
+  replug fixed it.
+
+### 4. Small requests: 8 KiB instead of 1 MiB
+
+libnjb always reads a track from byte 0, asking the player for 1 MiB at a
+time by offset and then reading that chunk in blocks.
+`libnjb-request-size.patch` makes the request size settable, and
+`njb_bulkget` can start and stop at any offset.
+
+- **Small requests read what large ones couldn't.** Two WAV files failed with
+  a read error on their very first 1 MiB request. Read in 8 KiB requests,
+  their first bad block turned out to be 4.5 MB and 14.5 MB into the file.
+- **With 1 MiB requests, freezes cluster oddly.** They all came within the
+  first 584 KiB of a request, and several offsets within the request
+  repeated across different files. We don't know why.
+- **With 8 KiB requests, a freeze marks the bad block itself.** Every
+  mid-file freeze point we re-read with 8 KiB requests froze again at the
+  same block, and the block after it read fine. Bad blocks never came back
+  readable.
+- Reading from an offset that is a multiple of 8 KiB runs at about
+  0.68 MB/s. From an unaligned offset it's 0.18 MB/s. Every offset and range
+  read was checked byte for byte against copies of undamaged songs.
+
+### 5. Bad blocks follow the drive's tracks
+
+In damaged files the bad blocks were not random. In one file they fell on a
+cycle of 10.44 blocks (85 KiB, probably one track of the drive): all 21 bad
+blocks lie within 2 blocks of that cycle, though only about a third of the
+cycle's positions were actually bad. In another, the bad blocks came
+alternately 9 and 26 blocks apart, two bad positions in each cycle of 35
+blocks, and all 35 of them also fit a cycle of 8.82 blocks. No two bad
+blocks were ever adjacent. This looks like a scratch crossing the tracks.
+
+`zen_salvage.py fill=` uses this. When at least 90% of the known bad blocks
+(and at least 6) fit a cycle of any length between 8 and 64 blocks, not
+necessarily a whole number, the other positions on the cycle are predicted
+bad. Otherwise, blocks one or two times the most common spacing away from a
+bad block are. Predicted blocks are skipped, and `probe=` tries them later.
+A prediction is kept once made, because new bad blocks can change the best
+fit and a block shouldn't be read just because it dropped out of it.
+
+### 6. Filling the gaps in WAV files
+
+`fill_wav_gaps.py` continues the waveform into each gap from both sides,
+repeating its last period (the lag between 2 and 25 ms at which the audio
+best matches itself), and crossfades from one continuation to the other
+across the gap. On a synthetic two-tone signal with 46 ms gaps, the error
+inside the gaps dropped from 100% (silence) to 4% (RMS). Only bytes inside
+the gaps are changed.
+
+## Results
+
+On our player (firmware 1.11.1): 1,048 files, 5.72 GB (971 MP3, 67 WMA,
+10 WAV).
+
+| Step | Result |
+|---|---|
+| Bulk copy | 1,029 files copied whole; 19 froze the player or failed |
+| Retries, one at a time | 3 more copied; 8 froze again, 5 of them at exactly the same byte as before |
+| Left with bad blocks | 16 files (5 were salvaged; the other 11 weren't tried) |
+| WMA DRM check | 67 files, none protected, all decode completely |
+
+The five salvaged files (percentages are of the file's bytes):
+
+| File | Format, size | Bulk copy | salvage | fill | probe | Bad blocks | Replugs |
+|---|---|---|---|---|---|---|---|
+| A | WAV, 63.8 MB | 0% (first request failed) | 99.97% | – | – | 2 | 2 |
+| B | WAV, 49.1 MB | 0% (first block bad) | 96.7% | 99.75% | – | 10 | 10 |
+| C | WAV, 59.2 MB | 0% (first request failed) | 78.5% | 96.3% | – | 21 | 21 |
+| D | MP3, 5.0 MB | 49.9% | 99.5% | – | – | 3 | 3 |
+| E | MP3, 6.8 MB | 23.7% | 45.5% | 94.2% | 95.8% | 35 | 34 |
+
+- **File C** shows the effect of prediction. With whole-block spacings,
+  fill gained 0.1–0.8 MB per replug. Once fractional cycles were detected,
+  the last two runs read about 8 MB with a single freeze. The 248 blocks
+  left unread (2 MB, 16% of the stretch salvage had skipped) are predicted
+  bad. Its 152 gaps, mostly 46 ms each and 12.5 s in total, were then filled
+  with `fill_wav_gaps.py`.
+- **File E**: before prediction, fill gained 100–200 KiB per replug. With
+  it, the first run read about 1 MB before its next freeze. Of its 25
+  predicted blocks, probe found 12 readable and 13 bad.
+- **File B** needed its header rebuilt, because its first block was bad.
+- The log records 92 freezes over 115 runs, each cleared by an unplug or a
+  battery pull.
 
 ## Limitations
 
-- Tested on one Zen Micro (firmware 1.11.1, 1,048 tracks, 5.7 GB) and one
-  laptop.
-- A song stored on a damaged part of the drive is recovered with gaps where
-  the player can't read it. A WAV whose first block is missing has lost its
-  header and won't play until a header is added back.
+- Tested on one Zen Micro and one laptop.
+- A file stored on a damaged part of the drive is recovered with gaps where
+  the player can't read it. Every bad block costs an unplug, so a heavily
+  damaged file takes patience.
 - Reading only. Nothing here sends music or firmware to the player.
 - The scripts look for the Zen Micro's USB ID `041e:411e` (`lsusb -d` in
   `zen_extract.py` and `resume_on_replug.sh`). For another model, change it

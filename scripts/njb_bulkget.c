@@ -8,7 +8,8 @@
  * Usage: njb_bulkget [pause in ms per MiB [bytes per chunk request]]
  *
  * stdin:  one request per line: "<trackid>\t<size>\t<output path>", plus
- *         "\t<offset>" to write only the bytes from that offset to the end
+ *         "\t<offset>" to write only the bytes from that offset to the end,
+ *         and "\t<end>" to stop at that offset instead
  * stdout: "READY" once captured, then "OK <id>" or "ERR <id>" per request.
  *         libnjb's own diagnostics and battery changes go to stderr.
  */
@@ -42,10 +43,12 @@ static int pace(u_int64_t sent, u_int64_t total, const char *buf, unsigned len,
 }
 
 /* NJB_Get_Track always starts at byte 0; this starts at `offset`, to read
- * past a spot that hangs the player. Writes bytes offset..size-1 of the track
- * to `path` as they arrive, following libnjb's own read loop. */
+ * past a spot that hangs the player. Writes bytes offset..end-1 of the track
+ * to `path` as they arrive, following libnjb's own read loop. Stopping before
+ * the end of the track lets a read avoid a spot known to hang the player;
+ * the last chunk may then go a little past `end`. */
 static int get_from(njb_t *njb, u_int32_t id, u_int32_t size,
-                    u_int32_t offset, const char *path)
+                    u_int32_t offset, u_int32_t end, const char *path)
 {
   unsigned char block[BLOCK_SIZE];
   int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -56,7 +59,7 @@ static int get_from(njb_t *njb, u_int32_t id, u_int32_t size,
     perror(path);
     return -1;
   }
-  while (offset < size) {
+  while (offset < end) {
     int left = njb3_request_file_chunk(njb, id, offset);
 
     if (left <= 0) /* error, or the player says the file ends here */
@@ -77,14 +80,14 @@ static int get_from(njb_t *njb, u_int32_t id, u_int32_t size,
       offset += n;
     }
     /* between requests, the same rest per MiB as pace() */
-    if (chunk_pause_ms && offset < size && offset / CHUNK_SIZE != mib) {
+    if (chunk_pause_ms && offset < end && offset / CHUNK_SIZE != mib) {
       usleep(chunk_pause_ms * 1000);
       mib = offset / CHUNK_SIZE;
     }
   }
   /* libnjb ends every transfer by asking for the chunk at the end of the
    * file, which the player answers with an empty one */
-  ret = njb3_request_file_chunk(njb, id, offset) == 0 ? 0 : -1;
+  ret = end < size || njb3_request_file_chunk(njb, id, offset) == 0 ? 0 : -1;
 out:
   close(fd);
   return ret;
@@ -142,8 +145,9 @@ int main(int argc, char **argv)
     char *id_s = strtok(line, "\t");
     char *size_s = strtok(NULL, "\t");
     char *path = strtok(NULL, "\t\n");
-    char *offset_s = strtok(NULL, "\n");
-    u_int32_t id, size, offset;
+    char *offset_s = strtok(NULL, "\t\n");
+    char *end_s = strtok(NULL, "\n");
+    u_int32_t id, size, offset, end;
     int ret;
 
     if (!id_s || !size_s || !path)
@@ -151,8 +155,11 @@ int main(int argc, char **argv)
     id = strtoul(id_s, NULL, 10);
     size = strtoul(size_s, NULL, 10);
     offset = offset_s ? strtoul(offset_s, NULL, 10) : 0;
-    if (offset)
-      ret = get_from(njb, id, size, offset, path);
+    end = end_s ? strtoul(end_s, NULL, 10) : size;
+    if (end > size)
+      end = size;
+    if (offset || end < size)
+      ret = get_from(njb, id, size, offset, end, path);
     else
       ret = NJB_Get_Track(njb, id, size, path, pace, NULL);
     if (ret == -1) {
